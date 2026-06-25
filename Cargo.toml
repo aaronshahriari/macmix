@@ -21,6 +21,11 @@ bytemuck = "1.24.0"
 # macOS CoreAudio HAL bindings (device enumeration, volume/mute, listeners)
 coreaudio-sys = "0.2"
 core-foundation-sys = "0.8"
+core-foundation = "0.10"
+# Objective-C bridge for CATapDescription (output metering via process taps)
+objc2 = "0.6"
+objc2-core-audio = { version = "0.3", features = ["AudioHardware", "objc2", "objc2-foundation"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSUUID"] }
 clap = { version = "4.5.26", features = ["derive", "wrap_help"] }
 crossterm = { version = "0.29.0", features = ["event-stream", "serde"] }
 futures = "0.3.31"

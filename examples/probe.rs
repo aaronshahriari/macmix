@@ -24,7 +24,9 @@ fn main() {
     let show_all = std::env::args().any(|a| a == "--all");
     let session = Session::spawn(show_all, handler).expect("spawn session");
 
-    let mut sources: Vec<ObjectId> = Vec::new();
+    // Capture both inputs (Audio/Source) and outputs (Audio/Sink); sinks
+    // exercise the process-tap path.
+    let mut targets: Vec<(ObjectId, &'static str)> = Vec::new();
     let mut dirty: HashMap<u32, Arc<AtomicBool>> = HashMap::new();
     let mut peaks: HashMap<u32, Arc<[AtomicF32]>> = HashMap::new();
     let mut capture_started = false;
@@ -34,20 +36,24 @@ fn main() {
         // After the first second, start metering every source device.
         if !capture_started && Instant::now() > deadline - Duration::from_millis(3000) {
             capture_started = true;
-            for &id in &sources {
+            for &(id, _) in &targets {
                 let flag = Arc::new(AtomicBool::new(false));
                 dirty.insert(id.into(), Arc::clone(&flag));
                 session.node_capture_start(id, 0, true, flag, None);
             }
-            println!("--- started metering {} source(s) ---", sources.len());
+            println!("--- started metering {} target(s) ---", targets.len());
         }
 
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::State(StateEvent::NodeProperties { object_id, props })) => {
-                if props.media_class().map(String::as_str) == Some("Audio/Source")
-                {
-                    if !sources.contains(&object_id) {
-                        sources.push(object_id);
+                let kind = match props.media_class().map(String::as_str) {
+                    Some("Audio/Source") => Some("in"),
+                    Some("Audio/Sink") => Some("out"),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    if !targets.iter().any(|&(id, _)| id == object_id) {
+                        targets.push((object_id, kind));
                     }
                 }
             }
@@ -65,11 +71,16 @@ fn main() {
             }
             Ok(Event::State(StateEvent::NodePeaksDirty { object_id })) => {
                 let key: u32 = object_id.into();
+                let kind = targets
+                    .iter()
+                    .find(|&&(id, _)| id == object_id)
+                    .map(|&(_, k)| k)
+                    .unwrap_or("?");
                 if let Some(p) = peaks.get(&key) {
                     let levels: Vec<f32> =
                         p.iter().map(|a| a.load()).collect();
                     if levels.iter().any(|&v| v > 0.0001) {
-                        println!("peaks {key}: {levels:?}");
+                        println!("peaks[{kind}] {key}: {levels:?}");
                     }
                 }
                 if let Some(flag) = dirty.get(&key) {
@@ -82,7 +93,7 @@ fn main() {
         }
     }
 
-    for &id in &sources {
+    for &(id, _) in &targets {
         session.node_capture_stop(id);
     }
 }

@@ -364,7 +364,8 @@ impl State {
             .media_class()
             .as_ref()
             .is_some_and(|media_class| {
-                media_class::is_source(media_class)
+                media_class::is_sink(media_class)
+                    || media_class::is_source(media_class)
                     || media_class::is_sink_input(media_class)
                     || media_class::is_source_output(media_class)
             })

@@ -1,12 +1,15 @@
-//! Input-device peak metering via a CoreAudio HAL IOProc.
+//! Peak metering via CoreAudio.
 //!
-//! When the front-end asks to capture a source node's levels
-//! ([`node_capture_start`](`crate::wirehose::CommandSender::node_capture_start`)),
-//! we attach an IOProc to that input device. On each input buffer it computes a
-//! per-channel peak (with the front-end's ballistics applied), stores it into a
-//! shared [`AtomicF32`] array, and — coalesced via the `peaks_dirty` flag — wakes
-//! the UI with a [`StateEvent::NodePeaksDirty`]. Output-device (sink) metering
-//! needs a process tap and is handled separately.
+//! Two paths, both feeding the same per-channel [`AtomicF32`] peak array and
+//! [`StateEvent::NodePeaksDirty`] wake-up (coalesced via the `peaks_dirty` flag):
+//!
+//! - **Input** (source nodes): attach a HAL IOProc directly to the input device.
+//! - **Output** (sink nodes): create a per-device process tap (macOS 14.4+),
+//!   wrap it in a private aggregate device, and run an IOProc on that. This
+//!   meters whatever is playing *to that specific output device*.
+//!
+//! The realtime [`meter_ioproc`] is shared: in both cases the audio to meter
+//! arrives as the IOProc's input buffer list.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -14,10 +17,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use coreaudio_sys::{
+    kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceTapAutoStartKey,
+    kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey,
+    kAudioObjectPropertyScopeGlobal, kAudioSubTapUIDKey, kAudioTapPropertyFormat,
     AudioBufferList, AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID,
-    AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop, AudioObjectID,
-    AudioTimeStamp, OSStatus,
+    AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop,
+    AudioHardwareCreateAggregateDevice, AudioHardwareDestroyAggregateDevice,
+    AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress,
+    AudioStreamBasicDescription, AudioTimeStamp, OSStatus,
 };
+
+use core_foundation::array::CFArray;
+use core_foundation::base::TCFType;
+use core_foundation::boolean::CFBoolean;
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::string::CFString;
+
+use objc2::AnyThread;
+use objc2_core_audio::{
+    AudioHardwareCreateProcessTap, AudioHardwareDestroyProcessTap,
+    CATapDescription,
+};
+use objc2_foundation::{NSArray, NSNumber, NSString};
 
 use crate::atomic_f32::AtomicF32;
 use crate::wirehose::event_sender::EventSender;
@@ -126,11 +147,21 @@ unsafe extern "C" fn meter_ioproc(
     NO_ERR
 }
 
-struct ActiveCapture {
-    device: AudioObjectID,
-    proc_id: AudioDeviceIOProcID,
-    /// Leaked [`CaptureState`]; reclaimed in [`CaptureManager::stop`].
-    state: *mut CaptureState,
+enum ActiveCapture {
+    /// Direct IOProc on an input device.
+    Input {
+        device: AudioObjectID,
+        proc_id: AudioDeviceIOProcID,
+        /// Leaked [`CaptureState`]; reclaimed in [`CaptureManager::stop`].
+        state: *mut CaptureState,
+    },
+    /// Process tap + aggregate device for an output device.
+    Output {
+        tap_id: AudioObjectID,
+        agg_id: AudioObjectID,
+        proc_id: AudioDeviceIOProcID,
+        state: *mut CaptureState,
+    },
 }
 
 /// Tracks the active metering IOProcs, keyed by node [`ObjectId`].
@@ -205,8 +236,106 @@ impl CaptureManager {
 
         self.active.insert(
             key,
-            ActiveCapture {
+            ActiveCapture::Input {
                 device,
+                proc_id,
+                state,
+            },
+        );
+    }
+
+    /// Start metering an output device (`device_uid`) for `object_id` via a
+    /// per-device process tap wrapped in a private aggregate device.
+    pub fn start_output(
+        &mut self,
+        emitter: Arc<EventSender>,
+        object_id: ObjectId,
+        device_uid: String,
+        peaks_dirty: Arc<AtomicBool>,
+        peak_processor: Option<Arc<dyn PeakProcessor>>,
+    ) {
+        let key: u32 = object_id.into();
+        if self.active.contains_key(&key) {
+            return;
+        }
+
+        // 1. Create a tap scoped to this device, excluding no processes.
+        let exclude: objc2::rc::Retained<NSArray<NSNumber>> =
+            NSArray::from_retained_slice(&[]);
+        let ns_uid = NSString::from_str(&device_uid);
+        let desc = unsafe {
+            CATapDescription::initExcludingProcesses_andDeviceUID_withStream(
+                CATapDescription::alloc(),
+                &exclude,
+                &ns_uid,
+                0,
+            )
+        };
+        let mut tap_id: AudioObjectID = 0;
+        if unsafe { AudioHardwareCreateProcessTap(Some(&desc), &mut tap_id) }
+            != NO_ERR
+            || tap_id == 0
+        {
+            return;
+        }
+        let tap_uuid = unsafe { desc.UUID().UUIDString() }.to_string();
+        let (channels, rate) = tap_format(tap_id);
+
+        // 2. Wrap the tap in a private aggregate device we can run an IOProc on.
+        let agg_uid = format!("macmix.tap.{key}");
+        let Some(agg_id) = create_tap_aggregate(&agg_uid, &tap_uuid) else {
+            unsafe { AudioHardwareDestroyProcessTap(tap_id) };
+            return;
+        };
+
+        let peaks: Arc<[AtomicF32]> =
+            (0..channels).map(|_| AtomicF32::new(0.0)).collect();
+        emitter.send(StateEvent::NodeStreamStarted {
+            object_id,
+            rate,
+            peaks: Arc::clone(&peaks),
+        });
+
+        let state = Box::into_raw(Box::new(CaptureState {
+            emitter,
+            object_id,
+            peaks,
+            peaks_dirty,
+            peak_processor,
+            rate,
+            channels,
+        }));
+
+        // 3. Run an IOProc on the aggregate; the tapped audio is its input.
+        let mut proc_id: AudioDeviceIOProcID = None;
+        let created = unsafe {
+            AudioDeviceCreateIOProcID(
+                agg_id,
+                Some(meter_ioproc),
+                state as *mut c_void,
+                &mut proc_id,
+            )
+        };
+        if created != NO_ERR
+            || proc_id.is_none()
+            || unsafe { AudioDeviceStart(agg_id, proc_id) } != NO_ERR
+        {
+            unsafe {
+                if proc_id.is_some() {
+                    AudioDeviceDestroyIOProcID(agg_id, proc_id);
+                }
+                AudioHardwareDestroyAggregateDevice(agg_id);
+                AudioHardwareDestroyProcessTap(tap_id);
+                drop(Box::from_raw(state));
+            }
+            return;
+        }
+
+        self.active.insert(
+            key,
+            ActiveCapture::Output {
+                tap_id,
+                agg_id,
                 proc_id,
                 state,
             },
@@ -220,15 +349,112 @@ impl CaptureManager {
             return;
         };
         unsafe {
-            AudioDeviceStop(active.device, active.proc_id);
-            AudioDeviceDestroyIOProcID(active.device, active.proc_id);
+            let state = match active {
+                ActiveCapture::Input {
+                    device,
+                    proc_id,
+                    state,
+                } => {
+                    AudioDeviceStop(device, proc_id);
+                    AudioDeviceDestroyIOProcID(device, proc_id);
+                    state
+                }
+                ActiveCapture::Output {
+                    tap_id,
+                    agg_id,
+                    proc_id,
+                    state,
+                } => {
+                    AudioDeviceStop(agg_id, proc_id);
+                    AudioDeviceDestroyIOProcID(agg_id, proc_id);
+                    AudioHardwareDestroyAggregateDevice(agg_id);
+                    AudioHardwareDestroyProcessTap(tap_id);
+                    state
+                }
+            };
             // Notify the front-end and reclaim the leaked state.
-            let state = Box::from_raw(active.state);
+            let state = Box::from_raw(state);
             state
                 .emitter
                 .send(StateEvent::NodeStreamStopped { object_id });
             drop(state);
         }
+    }
+}
+
+/// Read a tap's channel count and sample rate from its stream format.
+fn tap_format(tap_id: AudioObjectID) -> (usize, u32) {
+    let address = AudioObjectPropertyAddress {
+        mSelector: kAudioTapPropertyFormat,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: 0,
+    };
+    let mut asbd: AudioStreamBasicDescription = unsafe { std::mem::zeroed() };
+    let mut size =
+        std::mem::size_of::<AudioStreamBasicDescription>() as u32;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            tap_id,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut asbd as *mut _ as *mut c_void,
+        )
+    };
+    if status != NO_ERR || asbd.mChannelsPerFrame == 0 {
+        (2, 48_000)
+    } else {
+        (asbd.mChannelsPerFrame as usize, asbd.mSampleRate as u32)
+    }
+}
+
+/// A `CATapDescription`/aggregate dictionary key constant (a NUL-terminated
+/// byte string) as a `CFString`.
+fn cfkey(bytes: &[u8]) -> CFString {
+    CFString::new(std::str::from_utf8(&bytes[..bytes.len() - 1]).unwrap_or(""))
+}
+
+/// Create a private aggregate device containing the given sub-tap.
+fn create_tap_aggregate(
+    agg_uid: &str,
+    sub_tap_uuid: &str,
+) -> Option<AudioObjectID> {
+    let sub_tap = CFDictionary::from_CFType_pairs(&[(
+        cfkey(kAudioSubTapUIDKey).as_CFType(),
+        CFString::new(sub_tap_uuid).as_CFType(),
+    )]);
+    let tap_list = CFArray::from_CFTypes(&[sub_tap]);
+    let description = CFDictionary::from_CFType_pairs(&[
+        (
+            cfkey(kAudioAggregateDeviceUIDKey).as_CFType(),
+            CFString::new(agg_uid).as_CFType(),
+        ),
+        (
+            cfkey(kAudioAggregateDeviceIsPrivateKey).as_CFType(),
+            CFBoolean::true_value().as_CFType(),
+        ),
+        (
+            cfkey(kAudioAggregateDeviceTapAutoStartKey).as_CFType(),
+            CFBoolean::true_value().as_CFType(),
+        ),
+        (
+            cfkey(kAudioAggregateDeviceTapListKey).as_CFType(),
+            tap_list.as_CFType(),
+        ),
+    ]);
+
+    let mut agg_id: AudioObjectID = 0;
+    let status = unsafe {
+        AudioHardwareCreateAggregateDevice(
+            description.as_concrete_TypeRef() as *const _ as _,
+            &mut agg_id,
+        )
+    };
+    if status != NO_ERR || agg_id == 0 {
+        None
+    } else {
+        Some(agg_id)
     }
 }
 

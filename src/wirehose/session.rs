@@ -458,18 +458,28 @@ impl CommandSender for Session {
         peak_processor: Option<Arc<dyn PeakProcessor>>,
     ) {
         let (device, _scope, is_output) = node_target(object_id);
-        // Input (source) metering only; output (sink) metering needs a tap.
-        if is_output {
-            return;
-        }
         if let Ok(mut captures) = self.captures.lock() {
-            captures.start(
-                Arc::clone(&self.emitter),
-                object_id,
-                device,
-                peaks_dirty,
-                peak_processor,
-            );
+            if is_output {
+                // Output devices are metered via a per-device process tap,
+                // identified by the device's UID.
+                if let Some(uid) = hal::uid(device) {
+                    captures.start_output(
+                        Arc::clone(&self.emitter),
+                        object_id,
+                        uid,
+                        peaks_dirty,
+                        peak_processor,
+                    );
+                }
+            } else {
+                captures.start(
+                    Arc::clone(&self.emitter),
+                    object_id,
+                    device,
+                    peaks_dirty,
+                    peak_processor,
+                );
+            }
         }
     }
 
