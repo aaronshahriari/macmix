@@ -49,10 +49,19 @@ fn main() {
                 let kind = match props.media_class().map(String::as_str) {
                     Some("Audio/Source") => Some("in"),
                     Some("Audio/Sink") => Some("out"),
+                    Some("Stream/Output/Audio") => Some("app"),
                     _ => None,
                 };
                 if let Some(kind) = kind {
                     if !targets.iter().any(|&(id, _)| id == object_id) {
+                        if kind == "app" {
+                            println!(
+                                "app node {:?}: name={:?} desc={:?}",
+                                object_id,
+                                props.node_name(),
+                                props.node_description()
+                            );
+                        }
                         targets.push((object_id, kind));
                     }
                 }

@@ -173,8 +173,8 @@ keybindings = [
 # 2. Configured templates for the object type
 # 3. Fall back to the object's name property
 [names]
-# Streams in the Playback/Recording tabs
-stream = [ "{node:node.name}: {node:media.name}" ]
+# Streams in the Playback/Recording tabs (per-application audio)
+stream = [ "{node:node.description}" ]
 # Endpoints in the Input/Output Devices tabs
 endpoint = [ "{device:device.nick}", "{node:node.description}" ]
 # Devices in the Configuration tab

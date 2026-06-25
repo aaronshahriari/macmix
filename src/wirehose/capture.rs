@@ -254,12 +254,10 @@ impl CaptureManager {
         peaks_dirty: Arc<AtomicBool>,
         peak_processor: Option<Arc<dyn PeakProcessor>>,
     ) {
-        let key: u32 = object_id.into();
-        if self.active.contains_key(&key) {
+        if self.active.contains_key(&object_id.into()) {
             return;
         }
-
-        // 1. Create a tap scoped to this device, excluding no processes.
+        // Tap scoped to this device, excluding no processes.
         let exclude: objc2::rc::Retained<NSArray<NSNumber>> =
             NSArray::from_retained_slice(&[]);
         let ns_uid = NSString::from_str(&device_uid);
@@ -271,8 +269,47 @@ impl CaptureManager {
                 0,
             )
         };
+        self.start_tap(emitter, object_id, &desc, peaks_dirty, peak_processor);
+    }
+
+    /// Start metering a single process's output for `object_id` via a
+    /// process-scoped tap (used for per-app stream nodes).
+    pub fn start_process(
+        &mut self,
+        emitter: Arc<EventSender>,
+        object_id: ObjectId,
+        process: AudioObjectID,
+        peaks_dirty: Arc<AtomicBool>,
+        peak_processor: Option<Arc<dyn PeakProcessor>>,
+    ) {
+        if self.active.contains_key(&object_id.into()) {
+            return;
+        }
+        let include: objc2::rc::Retained<NSArray<NSNumber>> =
+            NSArray::from_retained_slice(&[NSNumber::new_u32(process)]);
+        let desc = unsafe {
+            CATapDescription::initStereoMixdownOfProcesses(
+                CATapDescription::alloc(),
+                &include,
+            )
+        };
+        self.start_tap(emitter, object_id, &desc, peaks_dirty, peak_processor);
+    }
+
+    /// Shared tap setup: create the tap from `desc`, wrap it in a private
+    /// aggregate device, and run a metering IOProc on it.
+    fn start_tap(
+        &mut self,
+        emitter: Arc<EventSender>,
+        object_id: ObjectId,
+        desc: &CATapDescription,
+        peaks_dirty: Arc<AtomicBool>,
+        peak_processor: Option<Arc<dyn PeakProcessor>>,
+    ) {
+        let key: u32 = object_id.into();
+
         let mut tap_id: AudioObjectID = 0;
-        if unsafe { AudioHardwareCreateProcessTap(Some(&desc), &mut tap_id) }
+        if unsafe { AudioHardwareCreateProcessTap(Some(desc), &mut tap_id) }
             != NO_ERR
             || tap_id == 0
         {
@@ -281,7 +318,6 @@ impl CaptureManager {
         let tap_uuid = unsafe { desc.UUID().UUIDString() }.to_string();
         let (channels, rate) = tap_format(tap_id);
 
-        // 2. Wrap the tap in a private aggregate device we can run an IOProc on.
         let agg_uid = format!("macmix.tap.{key}");
         let Some(agg_id) = create_tap_aggregate(&agg_uid, &tap_uuid) else {
             unsafe { AudioHardwareDestroyProcessTap(tap_id) };
@@ -306,7 +342,7 @@ impl CaptureManager {
             channels,
         }));
 
-        // 3. Run an IOProc on the aggregate; the tapped audio is its input.
+        // Run an IOProc on the aggregate; the tapped audio is its input.
         let mut proc_id: AudioDeviceIOProcID = None;
         let created = unsafe {
             AudioDeviceCreateIOProcID(

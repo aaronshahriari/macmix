@@ -39,6 +39,10 @@ const METADATA_ID: u32 = u32::MAX;
 /// device get distinct [`ObjectId`]s.
 const INPUT_FLAG: u32 = 0x8000_0000;
 
+/// Bit tagging a per-application *process* node (Playback tab), distinct from
+/// device node IDs and the input flag.
+const PROCESS_FLAG: u32 = 0x4000_0000;
+
 /// Signals from HAL property listeners telling the worker to re-query state.
 enum Refresh {
     /// The device list changed (a device was added or removed).
@@ -219,11 +223,18 @@ fn run(
     enumerate(&sender, &mut watched, &mut prev_nodes, ctx_void, show_all_devices);
     sender.send_ready();
 
+    // Device/default changes arrive via HAL listeners, but process audio
+    // (which apps are playing) has no listener, so re-enumerate periodically as
+    // a backstop to keep the per-application list fresh.
+    let mut idle_ticks: u32 = 0;
+    const REFRESH_TICKS: u32 = 8; // ~1.6s at 200ms per tick
+
     while !shutdown.load(Ordering::Relaxed) {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(_) => {
                 // Coalesce any queued signals, then do one full re-enumeration.
                 while rx.try_recv().is_ok() {}
+                idle_ticks = 0;
                 enumerate(
                     &sender,
                     &mut watched,
@@ -232,7 +243,19 @@ fn run(
                     show_all_devices,
                 );
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                idle_ticks += 1;
+                if idle_ticks >= REFRESH_TICKS {
+                    idle_ticks = 0;
+                    enumerate(
+                        &sender,
+                        &mut watched,
+                        &mut prev_nodes,
+                        ctx_void,
+                        show_all_devices,
+                    );
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -402,6 +425,24 @@ fn enumerate(
         }
     }
 
+    // Per-application stream nodes (Playback tab): processes producing output.
+    for process in hal::process_ids() {
+        if !hal::process_is_running_output(process) {
+            continue;
+        }
+        let pid = hal::process_pid(process);
+        let bundle = hal::process_bundle_id(process).filter(|s| !s.is_empty());
+        // Prefer the executable name; fall back to the bundle id, then pid.
+        let display = hal::process_name(pid)
+            .or_else(|| bundle.as_deref().map(app_name))
+            .unwrap_or_else(|| format!("PID {pid}"));
+        let node_name =
+            bundle.unwrap_or_else(|| format!("pid:{pid}"));
+        let id = ObjectId::from_raw_id(process | PROCESS_FLAG);
+        emit_process_node(sender, id, &node_name, &display);
+        nodes_now.insert(id.into());
+    }
+
     // Default sink/source, keyed by the corresponding node names.
     if let Some(default_out) = hal::default_device(true) {
         if let Some(uid) = hal::uid(default_out) {
@@ -427,6 +468,39 @@ fn enumerate(
         }
     }
     *prev_nodes = nodes_now;
+}
+
+/// A friendly app name from a bundle id (e.g. `com.apple.Music` -> `Music`).
+fn app_name(bundle: &str) -> String {
+    bundle
+        .rsplit('.')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(bundle)
+        .to_string()
+}
+
+/// Emit a per-application stream node. Volume defaults to 100% (the gain stage
+/// is a later step); metering is driven by a process-scoped tap on capture.
+fn emit_process_node(
+    sender: &EventSender,
+    node_id: ObjectId,
+    bundle: &str,
+    name: &str,
+) {
+    let serial: u32 = node_id.into();
+    sender.send(StateEvent::NodeProperties {
+        object_id: node_id,
+        props: node_props(bundle, name, "Stream/Output/Audio", serial),
+    });
+    sender.send(StateEvent::NodeVolumes {
+        object_id: node_id,
+        volumes: vec![1.0],
+    });
+    sender.send(StateEvent::NodeMute {
+        object_id: node_id,
+        mute: false,
+    });
 }
 
 /// Emit a default-device metadata property (value is a `{"name": ...}` JSON
@@ -457,6 +531,22 @@ impl CommandSender for Session {
         peaks_dirty: Arc<AtomicBool>,
         peak_processor: Option<Arc<dyn PeakProcessor>>,
     ) {
+        let raw: u32 = object_id.into();
+        if raw & PROCESS_FLAG != 0 {
+            // Per-application stream node: meter via a process-scoped tap.
+            let process = raw & !PROCESS_FLAG;
+            if let Ok(mut captures) = self.captures.lock() {
+                captures.start_process(
+                    Arc::clone(&self.emitter),
+                    object_id,
+                    process,
+                    peaks_dirty,
+                    peak_processor,
+                );
+            }
+            return;
+        }
+
         let (device, _scope, is_output) = node_target(object_id);
         if let Ok(mut captures) = self.captures.lock() {
             if is_output {

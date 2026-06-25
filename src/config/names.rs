@@ -11,7 +11,8 @@ use crate::wirehose::media_class;
 
 impl Names {
     pub fn default_stream() -> Vec<NameTemplate> {
-        vec!["{node:node.name}: {node:media.name}".parse().unwrap()]
+        // macmix streams are applications; show the friendly app name.
+        vec!["{node:node.description}".parse().unwrap()]
     }
 
     pub fn default_endpoint() -> Vec<NameTemplate> {

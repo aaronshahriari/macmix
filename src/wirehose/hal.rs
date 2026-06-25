@@ -16,7 +16,9 @@ use coreaudio_sys::{
     kAudioDevicePropertyDeviceUID, kAudioDevicePropertyMute,
     kAudioDevicePropertyNominalSampleRate,
     kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyTransportType,
-    kAudioDevicePropertyVolumeScalar,
+    kAudioDevicePropertyVolumeScalar, kAudioHardwarePropertyProcessObjectList,
+    kAudioProcessPropertyBundleID, kAudioProcessPropertyIsRunningOutput,
+    kAudioProcessPropertyPID,
     kAudioHardwarePropertyDefaultInputDevice,
     kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDevices,
     kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal,
@@ -281,6 +283,97 @@ const TRANSPORT_VIRTUAL: u32 = u32::from_be_bytes([b'v', b'i', b'r', b't']);
 /// hardware.
 pub fn is_virtual(device: AudioObjectID) -> bool {
     transport_type(device) == TRANSPORT_VIRTUAL
+}
+
+/// Enumerate all audio process objects known to the HAL (macOS 14.4+).
+pub fn process_ids() -> Vec<AudioObjectID> {
+    let address = addr(
+        kAudioHardwarePropertyProcessObjectList,
+        SCOPE_GLOBAL,
+        ELEMENT_MAIN,
+    );
+    unsafe {
+        let mut size: u32 = 0;
+        if AudioObjectGetPropertyDataSize(
+            SYSTEM_OBJECT,
+            &address,
+            0,
+            ptr::null(),
+            &mut size,
+        ) != NO_ERR
+        {
+            return Vec::new();
+        }
+        let count = size as usize / mem::size_of::<AudioObjectID>();
+        let mut ids: Vec<AudioObjectID> = vec![0; count];
+        if AudioObjectGetPropertyData(
+            SYSTEM_OBJECT,
+            &address,
+            0,
+            ptr::null(),
+            &mut size,
+            ids.as_mut_ptr() as *mut c_void,
+        ) != NO_ERR
+        {
+            return Vec::new();
+        }
+        ids.truncate(size as usize / mem::size_of::<AudioObjectID>());
+        ids
+    }
+}
+
+/// Whether the process is currently producing output audio.
+pub fn process_is_running_output(process: AudioObjectID) -> bool {
+    let address = addr(
+        kAudioProcessPropertyIsRunningOutput,
+        SCOPE_GLOBAL,
+        ELEMENT_MAIN,
+    );
+    unsafe {
+        get_fixed::<u32>(process, &address).is_some_and(|v| v != 0)
+    }
+}
+
+/// The process's bundle identifier (e.g. `com.apple.Music`), if available.
+pub fn process_bundle_id(process: AudioObjectID) -> Option<String> {
+    unsafe { cfstring_property(process, kAudioProcessPropertyBundleID) }
+}
+
+/// The process's POSIX process id.
+pub fn process_pid(process: AudioObjectID) -> i32 {
+    let address = addr(kAudioProcessPropertyPID, SCOPE_GLOBAL, ELEMENT_MAIN);
+    unsafe { get_fixed::<i32>(process, &address).unwrap_or(0) }
+}
+
+extern "C" {
+    /// From `<libproc.h>` (libSystem); returns the executable name for a pid.
+    fn proc_name(
+        pid: std::os::raw::c_int,
+        buffer: *mut c_void,
+        buffersize: u32,
+    ) -> std::os::raw::c_int;
+}
+
+/// The executable name for a pid (e.g. `Spotify`), via libproc.
+pub fn process_name(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    let mut buf = [0u8; 256];
+    let n = unsafe {
+        proc_name(pid, buf.as_mut_ptr() as *mut c_void, buf.len() as u32)
+    };
+    if n <= 0 {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&buf[..n as usize])
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 /// Render a four-char-code transport type as a readable string.
