@@ -14,11 +14,12 @@ use crate::wirehose::{
 use anyhow::{anyhow, Result};
 
 use ratatui::{
+    backend::Backend,
     layout::Flex,
     prelude::{Buffer, Constraint, Direction, Layout, Position, Rect},
     text::{Line, Span},
     widgets::{Clear, StatefulWidget, Widget},
-    DefaultTerminal, Frame,
+    Frame, Terminal,
 };
 
 use crossterm::event::{
@@ -264,7 +265,10 @@ impl<'a> App<'a> {
         }
     }
 
-    pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    pub fn run<B: Backend>(
+        mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
         // Wait until we've received all initial data from PipeWire
         let _ = terminal.draw(|frame| {
             frame.render_widget(Line::from("Initializing..."), frame.area());
@@ -863,6 +867,88 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Arc;
 
+    fn output_config() -> Config {
+        Config {
+            remote: None,
+            fps: None,
+            mouse: false,
+            peaks: Peaks::Off,
+            char_set: Default::default(),
+            theme: Default::default(),
+            max_volume_percent: 150.0,
+            enforce_max_volume: false,
+            keybindings: Default::default(),
+            help: Default::default(),
+            names: Default::default(),
+            tab: 0,
+            tabs: vec![TabKind::Output],
+            lazy_capture: true,
+            show_all_devices: false,
+            filters: Default::default(),
+        }
+    }
+
+    /// Drives the real `run()` loop against a `TestBackend`: feed an output
+    /// device + Ready, then disconnect so the loop exits, and confirm the
+    /// device renders. Guards against startup regressions (e.g. the loop
+    /// hanging or never drawing the device list).
+    #[test]
+    fn run_renders_output_device() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let commands = RefCell::new(VecDeque::new());
+        let wirehose = mock::WirehoseHandle::with_commands(&commands);
+
+        let (tx, rx) = mpsc::channel();
+        let id = ObjectId::from_raw_id(1);
+        let props = PropertyStore::from_pairs([
+            ("media.class", "Audio/Sink"),
+            ("node.name", "sink-uid"),
+            ("node.description", "Test Speakers"),
+            ("object.serial", "1"),
+        ]);
+        tx.send(Event::Pipewire(PipewireEvent::State(
+            StateEvent::NodeProperties {
+                object_id: id,
+                props,
+            },
+        )))
+        .unwrap();
+        tx.send(Event::Pipewire(PipewireEvent::State(
+            StateEvent::NodeVolumes {
+                object_id: id,
+                volumes: vec![0.125],
+            },
+        )))
+        .unwrap();
+        tx.send(Event::Pipewire(PipewireEvent::State(
+            StateEvent::NodeMute {
+                object_id: id,
+                mute: false,
+            },
+        )))
+        .unwrap();
+        tx.send(Event::Pipewire(PipewireEvent::Ready)).unwrap();
+        drop(tx); // run() exits once the queue drains
+
+        let app = App::new(&wirehose, rx, output_config());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let _ = app.run(&mut terminal);
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            rendered.contains("Test Speakers"),
+            "device list did not render; got:\n{rendered}"
+        );
+    }
+
     fn fixture<'a>(wirehose: &'a mock::WirehoseHandle<'a>) -> App<'a> {
         let (_, event_rx) = mpsc::channel();
 
@@ -881,6 +967,7 @@ mod tests {
             tab: 0,
             tabs: vec![TabKind::Playback],
             lazy_capture: Default::default(),
+            show_all_devices: Default::default(),
             filters: Default::default(),
         };
 
@@ -982,6 +1069,7 @@ mod tests {
                 TabKind::Configuration,
             ],
             lazy_capture: Default::default(),
+            show_all_devices: Default::default(),
             filters: Default::default(),
         };
         let mut app = App::new(&wirehose, event_rx, config);

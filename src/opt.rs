@@ -9,7 +9,7 @@ use crate::config::{self, TabKind};
 const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 #[derive(Parser, Default)]
-#[clap(name = "wiremix", about = "PipeWire mixer")]
+#[clap(name = "macmix", about = "A TUI mixer for macOS CoreAudio")]
 #[command(version = VERSION)]
 pub struct Opt {
     /// Override default config file path
@@ -56,6 +56,11 @@ pub struct Opt {
     /// Which tabs are present and their order
     #[clap(short = 'T', long, num_args = 1.., value_enum)]
     pub tabs: Option<Vec<TabKind>>,
+
+    /// Show all audio devices, including virtual ones installed by other apps
+    /// (e.g. Teams, Zoom, AppVolume), which are hidden by default
+    #[clap(long)]
+    pub all_devices: bool,
 
     /// Maximum volume for volume sliders
     #[clap(short = 'm', long, value_name = "PERCENT")]

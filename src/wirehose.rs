@@ -1,23 +1,19 @@
-//! Event-based wrapper around pipewire-rs.
-mod client;
+//! Event-based audio backend.
+//!
+//! Originally a wrapper around pipewire-rs; the macmix fork reimplements the
+//! internals against macOS CoreAudio while preserving the same public API
+//! (`CommandSender` for control, `StateEvent`/`Event` for updates).
+mod capture;
 mod command;
-mod deserialize;
-mod device;
 mod event;
 mod event_sender;
-mod execute;
-mod link;
+mod hal;
 pub mod media_class;
-mod metadata;
-mod node;
 mod object_id;
 mod property_store;
-mod proxy_registry;
 mod session;
 pub mod state;
 mod stream;
-mod stream_registry;
-mod sync_registry;
 
 pub use command::{Command, CommandSender};
 pub use event::{Event, PipewireError, StateEvent};

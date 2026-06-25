@@ -8,12 +8,12 @@ use crossterm::{
     ExecutableCommand,
 };
 
-use wiremix::app;
-use wiremix::config::Config;
-use wiremix::event::Event;
-use wiremix::input;
-use wiremix::opt::Opt;
-use wiremix::wirehose::Session;
+use macmix::app;
+use macmix::config::Config;
+use macmix::event::Event;
+use macmix::input;
+use macmix::opt::Opt;
+use macmix::wirehose::Session;
 
 fn main() -> Result<()> {
     // Event channel for sending PipeWire and input events to the UI
@@ -34,15 +34,15 @@ fn main() -> Result<()> {
         let event_tx = Arc::clone(&event_tx);
         move |event| event_tx.send(Event::Pipewire(event)).is_ok()
     };
-    // Spawn the wirehose thread to monitor PipeWire
-    let client = Session::spawn(config.remote.clone(), event_handler)?;
+    // Spawn the wirehose thread to monitor audio devices
+    let client = Session::spawn(config.show_all_devices, event_handler)?;
     let _input_handle = input::spawn(Arc::clone(&event_tx));
 
     #[cfg(debug_assertions)]
     if opt.dump_events {
         // Event dumping mode for debugging the monitor code
         for received in event_rx {
-            use wiremix::event::Event;
+            use macmix::event::Event;
             match received {
                 Event::Pipewire(event) => print!("{event:?}\r\n"),
                 event => {

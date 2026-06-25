@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use libspa::utils::dict::DictRef;
-
 use anyhow::{anyhow, Result};
 
 use crate::wirehose::ObjectId;
@@ -192,10 +190,18 @@ macro_rules! define_properties {
     }
 }
 
-impl From<&DictRef> for PropertyStore {
-    fn from(dict: &DictRef) -> Self {
+impl PropertyStore {
+    /// Build a [`PropertyStore`] from key/value string pairs. Known keys are
+    /// parsed into their typed form; unknown keys are stored as raw strings.
+    pub fn from_pairs<I, K, V>(pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
         let mut properties = HashMap::default();
-        for (key, value) in dict.iter() {
+        for (key, value) in pairs {
+            let (key, value) = (key.as_ref(), value.as_ref());
             let entry =
                 parse_dict_item(key, value).unwrap_or_else(|_| PropertyEntry {
                     raw: value.to_string(),
@@ -205,9 +211,7 @@ impl From<&DictRef> for PropertyStore {
         }
         PropertyStore { properties }
     }
-}
 
-impl PropertyStore {
     /// Get the raw string value for a property.
     pub fn raw(&self, key: &str) -> Option<&str> {
         self.properties.get(key).map(|e| e.raw.as_str())

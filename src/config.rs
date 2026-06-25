@@ -44,6 +44,7 @@ pub struct Config {
     pub tab: usize,
     pub tabs: Vec<TabKind>,
     pub lazy_capture: bool,
+    pub show_all_devices: bool,
     pub filters: Vec<MatchCondition>,
 }
 
@@ -88,6 +89,8 @@ struct ConfigFile {
     tabs: Vec<TabKind>,
     #[serde(default = "default_lazy_capture")]
     lazy_capture: bool,
+    #[serde(default)]
+    show_all_devices: bool,
     #[serde(default = "Filter::defaults", deserialize_with = "Filter::merge")]
     filters: Vec<Filter>,
 }
@@ -267,7 +270,10 @@ fn default_enforce_max_volume() -> bool {
 }
 
 fn default_lazy_capture() -> bool {
-    false
+    // Capture (and thus microphone access for input metering) only happens for
+    // on-screen nodes. This keeps macmix from touching the microphone at all
+    // until you actually view the Input Devices tab.
+    true
 }
 
 impl ConfigFile {
@@ -327,6 +333,10 @@ impl ConfigFile {
 
         if opt.lazy_capture {
             self.lazy_capture = true;
+        }
+
+        if opt.all_devices {
+            self.show_all_devices = true;
         }
     }
 }
@@ -396,6 +406,7 @@ impl TryFrom<ConfigFile> for Config {
             tab,
             tabs: config_file.tabs,
             lazy_capture: config_file.lazy_capture,
+            show_all_devices: config_file.show_all_devices,
             filters,
         })
     }
@@ -481,6 +492,8 @@ pub mod strict {
         tab: Option<TabKind>,
         tabs: Vec<TabKind>,
         lazy_capture: bool,
+        #[serde(default)]
+        show_all_devices: bool,
         filters: Vec<Filter>,
     }
 
@@ -502,6 +515,7 @@ pub mod strict {
                 tab: strict.tab,
                 tabs: strict.tabs,
                 lazy_capture: strict.lazy_capture,
+                show_all_devices: strict.show_all_devices,
                 filters: strict.filters,
             }
         }

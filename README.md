@@ -1,12 +1,17 @@
-# wiremix
+# macmix
 
-wiremix is a simple TUI audio mixer for PipeWire. You can use it to adjust
-volumes, route audio between devices and applications, and configure audio
-device settings like input/output ports and profiles.
+macmix is a TUI audio mixer for macOS, built on Apple's CoreAudio. You can use
+it to adjust volumes, switch between input/output devices, and (planned)
+control per-application volume.
 
-wiremix's interface is more or less a clone of the wonderful
-[ncpamixer](https://github.com/fulhax/ncpamixer) which was itself inspired by
-pavucontrol, so users of either should find it familiar.
+macmix is a fork of [wiremix](https://github.com/tsowell/wiremix) by Thomas
+Sowell — it reuses wiremix's terminal UI verbatim and replaces the Linux
+PipeWire backend with a CoreAudio one. wiremix's interface is itself more or
+less a clone of the wonderful
+[ncpamixer](https://github.com/fulhax/ncpamixer), inspired by pavucontrol, so
+users of either should find it familiar.
+
+The original wiremix is MIT OR Apache-2.0 licensed; macmix retains that license.
 
 Issues and pull requests are welcome!
 

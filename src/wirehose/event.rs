@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use pipewire::link::LinkInfoRef;
-
 use crate::atomic_f32::AtomicF32;
 use crate::wirehose::state::State;
 use crate::wirehose::{ObjectId, PropertyStore};
@@ -110,16 +108,6 @@ pub enum StateEvent {
     Removed {
         object_id: ObjectId,
     },
-}
-
-impl From<&LinkInfoRef> for StateEvent {
-    fn from(link_info: &LinkInfoRef) -> Self {
-        StateEvent::Link {
-            object_id: ObjectId::from_raw_id(link_info.id()),
-            output_id: ObjectId::from_raw_id(link_info.output_node_id()),
-            input_id: ObjectId::from_raw_id(link_info.input_node_id()),
-        }
-    }
 }
 
 impl StateEvent {

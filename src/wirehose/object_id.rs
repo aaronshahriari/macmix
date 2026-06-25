@@ -1,17 +1,8 @@
-//! Type for representing PipeWire object IDs.
+//! Type for representing audio object IDs.
 
-use libspa::utils::dict::DictRef;
-use pipewire::registry::GlobalObject;
-
-/// A PipeWire object ID.
+/// An audio object ID.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ObjectId(u32);
-
-impl From<&GlobalObject<&DictRef>> for ObjectId {
-    fn from(obj: &GlobalObject<&DictRef>) -> Self {
-        ObjectId(obj.id)
-    }
-}
 
 impl From<ObjectId> for u32 {
     fn from(id: ObjectId) -> u32 {
