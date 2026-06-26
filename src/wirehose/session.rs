@@ -8,7 +8,7 @@
 //! device) are applied directly against the HAL — they're thread-safe — and the
 //! resulting change notification drives the reactive re-emit.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -218,9 +218,18 @@ fn run(
     let mut watched: HashSet<AudioObjectID> = HashSet::new();
     // Node IDs emitted on the previous pass, to detect removals.
     let mut prev_nodes: HashSet<u32> = HashSet::new();
+    // Last-emitted values, so re-enumeration only sends what changed.
+    let mut cache = EmitCache::default();
 
     // Initial enumeration, then announce readiness.
-    enumerate(&sender, &mut watched, &mut prev_nodes, ctx_void, show_all_devices);
+    enumerate(
+        &sender,
+        &mut watched,
+        &mut prev_nodes,
+        &mut cache,
+        ctx_void,
+        show_all_devices,
+    );
     sender.send_ready();
 
     // Device/default changes arrive via HAL listeners, but process audio
@@ -239,6 +248,7 @@ fn run(
                     &sender,
                     &mut watched,
                     &mut prev_nodes,
+                    &mut cache,
                     ctx_void,
                     show_all_devices,
                 );
@@ -251,6 +261,7 @@ fn run(
                         &sender,
                         &mut watched,
                         &mut prev_nodes,
+                        &mut cache,
                         ctx_void,
                         show_all_devices,
                     );
@@ -324,9 +335,39 @@ fn to_cubic(scalar: f32) -> f32 {
     scalar.powi(3)
 }
 
-/// Emit the state for one device-scope as a node.
+/// Tracks the last value emitted per node/property so re-enumeration only sends
+/// events for things that actually changed. This keeps an idle macmix from
+/// re-emitting (and forcing a full UI rebuild) every refresh.
+#[derive(Default)]
+struct EmitCache {
+    metadata_named: bool,
+    /// node id -> properties signature.
+    props: HashMap<u32, String>,
+    /// node id -> last volume (as cubic-volume bits, for exact comparison).
+    volumes: HashMap<u32, u32>,
+    /// node id -> last mute state.
+    mutes: HashMap<u32, bool>,
+    /// metadata key -> last value.
+    defaults: HashMap<String, String>,
+}
+
+impl EmitCache {
+    fn forget(&mut self, node_id: u32) {
+        self.props.remove(&node_id);
+        self.volumes.remove(&node_id);
+        self.mutes.remove(&node_id);
+    }
+}
+
+fn props_signature(media_class: &str, node_name: &str, description: &str) -> String {
+    // Unit separator can't appear in these values.
+    format!("{media_class}\u{1f}{node_name}\u{1f}{description}")
+}
+
+/// Emit the state for one device-scope as a node, skipping unchanged values.
 fn emit_node(
     sender: &EventSender,
+    cache: &mut EmitCache,
     node_id: ObjectId,
     node_name: String,
     description: &str,
@@ -334,23 +375,35 @@ fn emit_node(
     scope: u32,
     device: AudioObjectID,
 ) {
-    let serial: u32 = node_id.into();
-    sender.send(StateEvent::NodeProperties {
-        object_id: node_id,
-        props: node_props(&node_name, description, media_class, serial),
-    });
+    let key: u32 = node_id.into();
+
+    let sig = props_signature(media_class, &node_name, description);
+    if cache.props.get(&key) != Some(&sig) {
+        sender.send(StateEvent::NodeProperties {
+            object_id: node_id,
+            props: node_props(&node_name, description, media_class, key),
+        });
+        cache.props.insert(key, sig);
+    }
 
     let scalar = hal::volume_scalar(device, scope).unwrap_or(0.0);
-    sender.send(StateEvent::NodeVolumes {
-        object_id: node_id,
-        volumes: vec![to_cubic(scalar)],
-    });
+    let cubic = to_cubic(scalar);
+    if cache.volumes.get(&key) != Some(&cubic.to_bits()) {
+        sender.send(StateEvent::NodeVolumes {
+            object_id: node_id,
+            volumes: vec![cubic],
+        });
+        cache.volumes.insert(key, cubic.to_bits());
+    }
 
     let muted = hal::mute(device, scope).unwrap_or(false);
-    sender.send(StateEvent::NodeMute {
-        object_id: node_id,
-        mute: muted,
-    });
+    if cache.mutes.get(&key) != Some(&muted) {
+        sender.send(StateEvent::NodeMute {
+            object_id: node_id,
+            mute: muted,
+        });
+        cache.mutes.insert(key, muted);
+    }
 }
 
 /// Full enumeration pass: emit nodes for all current devices, remove vanished
@@ -359,6 +412,7 @@ fn enumerate(
     sender: &EventSender,
     watched: &mut HashSet<AudioObjectID>,
     prev_nodes: &mut HashSet<u32>,
+    cache: &mut EmitCache,
     ctx: *mut c_void,
     show_all_devices: bool,
 ) {
@@ -386,11 +440,14 @@ fn enumerate(
 
     let mut nodes_now: HashSet<u32> = HashSet::new();
 
-    // Default metadata object.
-    sender.send(StateEvent::MetadataMetadataName {
-        object_id: ObjectId::from_raw_id(METADATA_ID),
-        metadata_name: String::from("default"),
-    });
+    // Default metadata object (emit once).
+    if !cache.metadata_named {
+        sender.send(StateEvent::MetadataMetadataName {
+            object_id: ObjectId::from_raw_id(METADATA_ID),
+            metadata_name: String::from("default"),
+        });
+        cache.metadata_named = true;
+    }
 
     for &device in &devices {
         let description = hal::name(device)
@@ -401,6 +458,7 @@ fn enumerate(
             let id = output_node_id(device);
             emit_node(
                 sender,
+                cache,
                 id,
                 output_node_name(&uid),
                 &description,
@@ -414,6 +472,7 @@ fn enumerate(
             let id = input_node_id(device);
             emit_node(
                 sender,
+                cache,
                 id,
                 input_node_name(&uid),
                 &description,
@@ -439,20 +498,26 @@ fn enumerate(
         let node_name =
             bundle.unwrap_or_else(|| format!("pid:{pid}"));
         let id = ObjectId::from_raw_id(process | PROCESS_FLAG);
-        emit_process_node(sender, id, &node_name, &display);
+        emit_process_node(sender, cache, id, &node_name, &display);
         nodes_now.insert(id.into());
     }
 
     // Default sink/source, keyed by the corresponding node names.
     if let Some(default_out) = hal::default_device(true) {
         if let Some(uid) = hal::uid(default_out) {
-            emit_default(sender, "default.audio.sink", &output_node_name(&uid));
+            emit_default(
+                sender,
+                cache,
+                "default.audio.sink",
+                &output_node_name(&uid),
+            );
         }
     }
     if let Some(default_in) = hal::default_device(false) {
         if let Some(uid) = hal::uid(default_in) {
             emit_default(
                 sender,
+                cache,
                 "default.audio.source",
                 &input_node_name(&uid),
             );
@@ -465,6 +530,7 @@ fn enumerate(
             sender.send(StateEvent::Removed {
                 object_id: ObjectId::from_raw_id(*old),
             });
+            cache.forget(*old);
         }
     }
     *prev_nodes = nodes_now;
@@ -480,39 +546,59 @@ fn app_name(bundle: &str) -> String {
         .to_string()
 }
 
-/// Emit a per-application stream node. Volume defaults to 100% (the gain stage
-/// is a later step); metering is driven by a process-scoped tap on capture.
+/// Emit a per-application stream node, skipping unchanged values. Volume seeds
+/// to 100% on first appearance and isn't re-emitted afterwards.
 fn emit_process_node(
     sender: &EventSender,
+    cache: &mut EmitCache,
     node_id: ObjectId,
     bundle: &str,
     name: &str,
 ) {
-    let serial: u32 = node_id.into();
-    sender.send(StateEvent::NodeProperties {
-        object_id: node_id,
-        props: node_props(bundle, name, "Stream/Output/Audio", serial),
-    });
-    sender.send(StateEvent::NodeVolumes {
-        object_id: node_id,
-        volumes: vec![1.0],
-    });
-    sender.send(StateEvent::NodeMute {
-        object_id: node_id,
-        mute: false,
-    });
+    let key: u32 = node_id.into();
+
+    let sig = props_signature("Stream/Output/Audio", bundle, name);
+    if cache.props.get(&key) != Some(&sig) {
+        sender.send(StateEvent::NodeProperties {
+            object_id: node_id,
+            props: node_props(bundle, name, "Stream/Output/Audio", key),
+        });
+        cache.props.insert(key, sig);
+    }
+    if !cache.volumes.contains_key(&key) {
+        sender.send(StateEvent::NodeVolumes {
+            object_id: node_id,
+            volumes: vec![1.0],
+        });
+        cache.volumes.insert(key, 1.0f32.to_bits());
+    }
+    if !cache.mutes.contains_key(&key) {
+        sender.send(StateEvent::NodeMute {
+            object_id: node_id,
+            mute: false,
+        });
+        cache.mutes.insert(key, false);
+    }
 }
 
 /// Emit a default-device metadata property (value is a `{"name": ...}` JSON
-/// object, matching how the front-end reads PipeWire defaults).
-fn emit_default(sender: &EventSender, key: &str, node_name: &str) {
+/// object, matching how the front-end reads PipeWire defaults). Skips unchanged.
+fn emit_default(
+    sender: &EventSender,
+    cache: &mut EmitCache,
+    key: &str,
+    node_name: &str,
+) {
     let value = serde_json::json!({ "name": node_name }).to_string();
-    sender.send(StateEvent::MetadataProperty {
-        object_id: ObjectId::from_raw_id(METADATA_ID),
-        subject: 0,
-        key: Some(String::from(key)),
-        value: Some(value),
-    });
+    if cache.defaults.get(key) != Some(&value) {
+        sender.send(StateEvent::MetadataProperty {
+            object_id: ObjectId::from_raw_id(METADATA_ID),
+            subject: 0,
+            key: Some(String::from(key)),
+            value: Some(value.clone()),
+        });
+        cache.defaults.insert(key.to_string(), value);
+    }
 }
 
 /// Find a device whose UID matches `uid`.
