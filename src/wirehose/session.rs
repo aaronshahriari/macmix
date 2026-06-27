@@ -25,6 +25,7 @@ use coreaudio_sys::{
 
 use crate::wirehose::capture::CaptureManager;
 use crate::wirehose::event_sender::EventSender;
+use crate::wirehose::mute::ProcessManager;
 use crate::wirehose::stream::PeakProcessor;
 use crate::wirehose::{
     hal, CommandSender, EventHandler, ObjectId, PropertyStore, StateEvent,
@@ -97,8 +98,10 @@ pub struct Session {
     handle: Option<thread::JoinHandle<()>>,
     /// Shared event emitter, also used by capture IOProcs.
     emitter: Arc<EventSender>,
-    /// Active input-metering IOProcs.
+    /// Active device input/output metering IOProcs.
     captures: Mutex<CaptureManager>,
+    /// Per-application metering + mute.
+    processes: Mutex<ProcessManager>,
 }
 
 impl Session {
@@ -126,8 +129,9 @@ impl Session {
         Ok(Self {
             shutdown,
             handle: Some(handle),
-            emitter,
+            emitter: Arc::clone(&emitter),
             captures: Mutex::new(CaptureManager::new()),
+            processes: Mutex::new(ProcessManager::new(emitter)),
         })
     }
 }
@@ -619,11 +623,10 @@ impl CommandSender for Session {
     ) {
         let raw: u32 = object_id.into();
         if raw & PROCESS_FLAG != 0 {
-            // Per-application stream node: meter via a process-scoped tap.
+            // Per-application stream node: metering + mute via the process mgr.
             let process = raw & !PROCESS_FLAG;
-            if let Ok(mut captures) = self.captures.lock() {
-                captures.start_process(
-                    Arc::clone(&self.emitter),
+            if let Ok(mut procs) = self.processes.lock() {
+                procs.start_metering(
                     object_id,
                     process,
                     peaks_dirty,
@@ -660,12 +663,28 @@ impl CommandSender for Session {
     }
 
     fn node_capture_stop(&self, object_id: ObjectId) {
+        let raw: u32 = object_id.into();
+        if raw & PROCESS_FLAG != 0 {
+            if let Ok(mut procs) = self.processes.lock() {
+                procs.stop_metering(object_id);
+            }
+            return;
+        }
         if let Ok(mut captures) = self.captures.lock() {
             captures.stop(object_id);
         }
     }
 
     fn node_mute(&self, object_id: ObjectId, mute: bool) {
+        let raw: u32 = object_id.into();
+        if raw & PROCESS_FLAG != 0 {
+            // Per-application mute via a muted tap (no device aggregate).
+            let process = raw & !PROCESS_FLAG;
+            if let Ok(mut procs) = self.processes.lock() {
+                procs.set_mute(object_id, process, mute);
+            }
+            return;
+        }
         let (device, scope, _) = node_target(object_id);
         hal::set_mute(device, scope, mute);
     }
@@ -674,6 +693,12 @@ impl CommandSender for Session {
         let Some(&cubic) = volumes.first() else {
             return;
         };
+        let raw: u32 = object_id.into();
+        if raw & PROCESS_FLAG != 0 {
+            // Per-application partial volume isn't supported (mute-only); the
+            // slider is inert for apps. Device volume is handled below.
+            return;
+        }
         let (device, scope, _) = node_target(object_id);
         // The front-end stores cubic volume; CoreAudio wants the scalar.
         hal::set_volume_scalar(device, scope, cubic.cbrt());

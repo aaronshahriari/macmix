@@ -49,14 +49,14 @@ use crate::wirehose::{ObjectId, StateEvent};
 const NO_ERR: OSStatus = 0;
 
 /// Per-capture state shared with the realtime IOProc via a raw pointer.
-struct CaptureState {
-    emitter: Arc<EventSender>,
-    object_id: ObjectId,
-    peaks: Arc<[AtomicF32]>,
-    peaks_dirty: Arc<AtomicBool>,
-    peak_processor: Option<Arc<dyn PeakProcessor>>,
-    rate: u32,
-    channels: usize,
+pub(crate) struct CaptureState {
+    pub(crate) emitter: Arc<EventSender>,
+    pub(crate) object_id: ObjectId,
+    pub(crate) peaks: Arc<[AtomicF32]>,
+    pub(crate) peaks_dirty: Arc<AtomicBool>,
+    pub(crate) peak_processor: Option<Arc<dyn PeakProcessor>>,
+    pub(crate) rate: u32,
+    pub(crate) channels: usize,
 }
 
 unsafe fn update_peak(
@@ -81,7 +81,7 @@ unsafe fn update_peak(
 }
 
 /// The IOProc. Runs on a CoreAudio realtime thread.
-unsafe extern "C" fn meter_ioproc(
+pub(crate) unsafe extern "C" fn meter_ioproc(
     _device: AudioObjectID,
     _now: *const AudioTimeStamp,
     input_data: *const AudioBufferList,
@@ -272,30 +272,6 @@ impl CaptureManager {
         self.start_tap(emitter, object_id, &desc, peaks_dirty, peak_processor);
     }
 
-    /// Start metering a single process's output for `object_id` via a
-    /// process-scoped tap (used for per-app stream nodes).
-    pub fn start_process(
-        &mut self,
-        emitter: Arc<EventSender>,
-        object_id: ObjectId,
-        process: AudioObjectID,
-        peaks_dirty: Arc<AtomicBool>,
-        peak_processor: Option<Arc<dyn PeakProcessor>>,
-    ) {
-        if self.active.contains_key(&object_id.into()) {
-            return;
-        }
-        let include: objc2::rc::Retained<NSArray<NSNumber>> =
-            NSArray::from_retained_slice(&[NSNumber::new_u32(process)]);
-        let desc = unsafe {
-            CATapDescription::initStereoMixdownOfProcesses(
-                CATapDescription::alloc(),
-                &include,
-            )
-        };
-        self.start_tap(emitter, object_id, &desc, peaks_dirty, peak_processor);
-    }
-
     /// Shared tap setup: create the tap from `desc`, wrap it in a private
     /// aggregate device, and run a metering IOProc on it.
     fn start_tap(
@@ -419,7 +395,7 @@ impl CaptureManager {
 }
 
 /// Read a tap's channel count and sample rate from its stream format.
-fn tap_format(tap_id: AudioObjectID) -> (usize, u32) {
+pub(crate) fn tap_format(tap_id: AudioObjectID) -> (usize, u32) {
     let address = AudioObjectPropertyAddress {
         mSelector: kAudioTapPropertyFormat,
         mScope: kAudioObjectPropertyScopeGlobal,
@@ -447,12 +423,12 @@ fn tap_format(tap_id: AudioObjectID) -> (usize, u32) {
 
 /// A `CATapDescription`/aggregate dictionary key constant (a NUL-terminated
 /// byte string) as a `CFString`.
-fn cfkey(bytes: &[u8]) -> CFString {
+pub(crate) fn cfkey(bytes: &[u8]) -> CFString {
     CFString::new(std::str::from_utf8(&bytes[..bytes.len() - 1]).unwrap_or(""))
 }
 
 /// Create a private aggregate device containing the given sub-tap.
-fn create_tap_aggregate(
+pub(crate) fn create_tap_aggregate(
     agg_uid: &str,
     sub_tap_uuid: &str,
 ) -> Option<AudioObjectID> {

@@ -9,6 +9,7 @@ mod event;
 mod event_sender;
 mod hal;
 pub mod media_class;
+mod mute;
 mod object_id;
 mod property_store;
 mod session;
