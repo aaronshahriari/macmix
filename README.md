@@ -1,165 +1,158 @@
 # macmix
 
-macmix is a TUI audio mixer for macOS, built on Apple's CoreAudio. You can use
-it to adjust volumes, switch between input/output devices, and (planned)
-control per-application volume.
+macmix is a terminal (TUI) audio mixer for macOS, built natively on Apple's
+CoreAudio. It lets you control your audio devices and see what's playing,
+without leaving the terminal:
 
-macmix is a fork of [wiremix](https://github.com/tsowell/wiremix) by Thomas
-Sowell — it reuses wiremix's terminal UI verbatim and replaces the Linux
-PipeWire backend with a CoreAudio one. wiremix's interface is itself more or
-less a clone of the wonderful
-[ncpamixer](https://github.com/fulhax/ncpamixer), inspired by pavucontrol, so
-users of either should find it familiar.
+- **Adjust per-device volume and mute** for output and input devices.
+- **Switch the default output/input device** (the system "sound output/input").
+- **Live VU meters** for output devices, input devices, and individual
+  applications.
+- **Mute individual applications** (e.g. silence one app while others keep
+  playing).
+- **Hide the noise** — virtual devices that other apps install (Teams, Zoom,
+  AppVolume, etc.) are hidden by default.
 
-The original wiremix is MIT OR Apache-2.0 licensed; macmix retains that license.
-
-Issues and pull requests are welcome!
+No kernel extension, no audio driver, no background daemon — just a CLI that
+talks to CoreAudio directly.
 
 <img src="https://github.com/user-attachments/assets/26823e34-3a6f-4a3a-bdb2-cde7f3d4cbe5" width="612">
 
+## Requirements
+
+- **macOS 14.4 or later.** Device control works broadly, but the VU meters and
+  per-application mute use the modern CoreAudio process-tap API introduced in
+  macOS 14.4.
+- A **Rust toolchain** (e.g. via [rustup](https://rustup.rs)) to build.
+
+The first time macmix meters an input device it may ask for **microphone**
+permission, and metering output/applications may ask for **audio-recording**
+permission — these are only requested when you open a tab that needs them.
+
 ## Installation
 
-### Package Managers
+```sh
+git clone git@github.com:aaronshahriari/macmix.git
+cd macmix
+cargo install --path .
+```
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/wiremix.svg?columns=2)](https://repology.org/project/wiremix/versions)
-
-### Manual Installation
-
-wiremix depends on Rust and the PipeWire libraries. To install all
-dependencies:
-
-* Ubuntu: `sudo apt install cargo libpipewire-0.3-dev pkg-config clang`
-* Debian: `sudo apt install libpipewire-0.3-dev pkg-config clang` (you will
-  also need to install a somewhat recent Rust toolchain - rustup is one way)
-
-Then install wiremix with `cargo install wiremix`
+This builds an optimized binary and installs it to `~/.cargo/bin/macmix` (on
+your `PATH` if you use rustup). Run `cargo install --path .` again to update
+after pulling changes.
 
 ## Quick Start
 
-1. Run `wiremix` to launch with default settings
-2. Use mouse and keyboard bindings to operate the mixer
-   - ? to display keyboard bindings
-   - Arrow keys or hjkl to navigate and adjust volume
-   - Tab or HL to change tabs
-   - c to open a dropdown to route audio to a different destination
-   - m to mute/unmute
-   - d set an input or output device as the default source/sink
+Run `macmix` to launch with default settings, then:
+
+- `?` to show the keyboard bindings
+- `Tab` / `H` / `L` to switch tabs
+- arrow keys or `hjkl` to navigate lists and adjust volume
+- `m` to mute / unmute the selected item
+- `d` to set the selected output/input device as the system default
+- `q` to quit
+
+By default, virtual devices created by other apps are hidden. Pass
+`--all-devices` (or set `show_all_devices = true` in the config) to show them.
+
+## Tabs
+
+- **Output Devices** — your speakers/headphones/etc. Adjust volume, mute, set
+  the default, and watch the output meter.
+- **Input Devices** — microphones and capture devices. Same controls, plus a
+  live input meter.
+- **Playback** — applications currently producing audio. Each app shows a live
+  meter and can be muted independently.
+- **Recording** — applications capturing audio (often empty on macOS).
+- **Configuration** — reserved; macmix models devices simply and does not
+  expose CoreAudio profiles/routes here.
+
+### A note on per-application volume
+
+macmix can **mute** individual apps, but it does **not** offer per-app *partial*
+volume (a 50% slider). On macOS that requires intercepting and re-rendering each
+app's audio through a virtual device, which is the job of a signed audio driver
+(e.g. AppVolume). macmix keeps to what it can do safely and natively, so the
+per-app volume slider is display-only — use the device volume, or a dedicated
+per-app volume app, for fine control.
 
 ## Command-line Options
 
 ```
-PipeWire mixer
+A TUI mixer for macOS CoreAudio
 
-Usage: wiremix [OPTIONS]
+Usage: macmix [OPTIONS]
 
 Options:
-  -c, --config <FILE>
-          Override default config file path
-  -r, --remote <NAME>
-          The name of the remote to connect to
-  -f, --fps <FPS>
-          Target frames per second (or 0 for unlimited)
-  -s, --char-set <NAME>
-          Character set to use [built-in sets: default, compat, extracompat]
-  -t, --theme <NAME>
-          Theme to use [built-in themes: default, nocolor, plain]
-  -p, --peaks <PEAKS>
-          Audio peak meters [possible values: off, mono, auto]
-      --no-mouse
-          Disable mouse support
-      --mouse
-          Enable mouse support
-  -v, --tab <TAB>
-          Initial tab view [possible values: playback, recording, output, input,
-          configuration]
-  -T, --tabs <TABS>...
-          Which tabs are present and their order [possible values: playback,
-          recording, output, input, configuration]
-  -m, --max-volume-percent <PERCENT>
-          Maximum volume for volume sliders
-      --no-enforce-max-volume
-          Allow increasing volume past max-volume-percent
-      --enforce-max-volume
-          Prevent increasing volume past max-volume-percent
-      --no-lazy-capture
-          Monitor peak levels of all nodes
-      --lazy-capture
-          Only monitor peak levels of on-screen nodes (reduces CPU usage, but
-          peaks appear with a slight delay)
-  -h, --help
-          Print help
-  -V, --version
-          Print version
+  -c, --config <FILE>                 Override default config file path
+  -f, --fps <FPS>                     Target frames per second (or 0 for unlimited)
+  -s, --char-set <NAME>               Character set [built-in: default, compat, extracompat]
+  -t, --theme <NAME>                  Theme [built-in: default, nocolor, plain]
+  -p, --peaks <PEAKS>                 Audio peak meters [values: off, mono, auto]
+      --no-mouse                      Disable mouse support
+      --mouse                         Enable mouse support
+  -v, --tab <TAB>                     Initial tab [values: playback, recording, output,
+                                      input, configuration]
+  -T, --tabs <TABS>...                Which tabs are present and their order
+      --all-devices                   Show all audio devices, including virtual ones installed
+                                      by other apps (e.g. Teams, Zoom, AppVolume)
+  -m, --max-volume-percent <PERCENT>  Maximum volume for volume sliders
+      --no-enforce-max-volume         Allow increasing volume past max-volume-percent
+      --enforce-max-volume            Prevent increasing volume past max-volume-percent
+      --no-lazy-capture               Meter all nodes (accesses devices even off-screen)
+      --lazy-capture                  Only meter on-screen nodes (default; lower CPU)
+  -h, --help                          Print help
+  -V, --version                       Print version
 ```
 
-Command-line options override corresponding settings in the configuration file.
+Command-line options override the corresponding settings in the configuration
+file.
 
 ## Input Bindings
 
-Everything except quitting can also be done with the mouse. Some of the
-less-intuitive mouse controls are:
+Most actions can also be done with the mouse — notably:
 
-* Click the numeric volume percentage to toggle muting.
-* Scroll through lists and dropdowns with the mouse wheel or click on scroll
-  buttons (default appearance: `•••`)
-* Right-click to set as the default source/sink
+- Click the numeric volume percentage to toggle muting.
+- Scroll lists and dropdowns with the mouse wheel.
+- Right-click a device to set it as the default.
 
 ### Default Keyboard Bindings
 
-| Input         | Action                  |
-| ------------- | ----------------------- |
-| q             | Quit                    |
-| m             | Toggle mute             |
-| d             | Set default source/sink |
-| l/Right arrow | Increment volume        |
-| h/Left arrow  | Decrement volume        |
-| Enter/c       | Open dropdown or choose |
-| Esc           | Cancel dropdown         |
-| j/Down arrow  | Move down               |
-| k/Up arrow    | Move up                 |
-| H/Shift+Tab   | Select previous tab     |
-| L/Tab         | Select next tab         |
-| ` (Backtick)  | Set volume 0%           |
-| 1             | Set volume 10%          |
-| 2             | Set volume 20%          |
-| 3             | Set volume 30%          |
-| 4             | Set volume 40%          |
-| 5             | Set volume 50%          |
-| 6             | Set volume 60%          |
-| 7             | Set volume 70%          |
-| 8             | Set volume 80%          |
-| 9             | Set volume 90%          |
-| 0             | Set volume 100%         |
-| ?             | Toggle help screen      |
+| Input         | Action                      |
+| ------------- | --------------------------- |
+| q             | Quit                        |
+| m             | Toggle mute                 |
+| d             | Set default output/input    |
+| l/Right arrow | Increment volume            |
+| h/Left arrow  | Decrement volume            |
+| Enter/c       | Open dropdown / choose      |
+| Esc           | Cancel dropdown             |
+| j/Down arrow  | Move down                   |
+| k/Up arrow    | Move up                     |
+| H/Shift+Tab   | Select previous tab         |
+| L/Tab         | Select next tab             |
+| ` (Backtick)  | Set volume 0%               |
+| 1 – 9         | Set volume 10% – 90%        |
+| 0             | Set volume 100%             |
+| ?             | Toggle help screen          |
 
 ## Configuration
 
-wiremix can be configured through a TOML configuration file.
+macmix is configured through a TOML file. It looks for the file in these
+locations, in order of precedence:
 
-It searches for the configuration file in these locations (in order of
-precedence):
+1. The path given on the command line via `-c`/`--config`
+2. `$XDG_CONFIG_HOME/macmix/macmix.toml`
+3. `~/.config/macmix/macmix.toml`
 
-1. Path specified on the command-line via `-c`/`--config`
-2. `$XDG_CONFIG_HOME/wiremix/wiremix.toml`
-3. `~/.config/wiremix/wiremix.toml`
+Your configuration is merged with macmix's defaults, so you only need to set the
+options you want to change. The bundled [macmix.toml](./macmix.toml) documents
+every option and the default values — start from an empty file and use it as a
+reference.
 
-This README only describes basic capabilities. Please see
-[wiremix.toml](./wiremix.toml) in this repository for detailed documentation on
-configuring wiremix. It also provides a reference for all of wiremix's
-defaults.
-
-The configuration specified in the file is merged with wiremix's defaults, so
-it only needs to specify the options that need to be changed. It is recommended
-to start with an empty configuration file and use this repository's
-[wiremix.toml](./wiremix.toml) as a reference.
-
-### Basic Configuration
-
-Everything that can specified on the command-line has a corresponding option in
-the configuration file.
+### Basic Options
 
 ```toml
-#remote = "pipewire-0"
 #fps = 60.0
 mouse = true
 peaks = "auto"
@@ -169,147 +162,48 @@ tab = "playback"
 tabs = [ "playback", "recording", "output", "input", "configuration" ]
 max_volume_percent = 150.0
 enforce_max_volume = false
-lazy_capture = false
+lazy_capture = true
+show_all_devices = false
 ```
 
-### Keybindings
+### Character Sets and Themes
 
-The configuration file can customize keyboard controls for all wiremix actions.
-See [wiremix.toml](./wiremix.toml) for more details.
-
-#### Examples
-
-```toml
-keybindings = [
- # Use ncpamixer-style absolute volume bindings
- { key = { Char = "`" }, action = "Nothing" },
- { key = { Char = "0" }, action = { SetAbsoluteVolume = 0.0 } },
- # Chars 1-9 already work like ncpamixer
-]
-```
-
-```toml
-keybindings = [
- # Use F-keys to select tabs
- { key = { F = 1 }, action = { SelectTab = 0 } },
- { key = { F = 2 }, action = { SelectTab = 1 } },
- { key = { F = 3 }, action = { SelectTab = 2 } },
- { key = { F = 4 }, action = { SelectTab = 3 } },
- { key = { F = 5 }, action = { SelectTab = 4 } },
-]
-```
-
-### Character Sets
-
-Character sets define the symbols used in the user interface. You can define
-multiple character sets and switch between them using the `char_set`
-configuration option or the `-s`/`--char-set` command-line argument.
-
-There are three built-in character sets.
-
-1. `default` is the default set. It may contain symbols that can't be rendered
-   with your terminal or console.
-2. `compat` uses only symbols from
-   [cross-platform-terminal-characters](https://github.com/ehmicky/cross-platform-terminal-characters).
-3. `extracompat` uses only ASCII symbols.
-
-The configuration file allows for both modifying built-in character sets and
-creating custom ones.
-
-See [wiremix.toml](./wiremix.toml) for more details.
-
-### Themes
-
-Themes define colors and other text attributes for UI elements. They are
-similar to character sets in that you can define your own themes and switch
-between them with the `theme` configuration option or the `-t`/`--theme`
-command-line arguments.
-
-There are three built-in themes:
-
-1. `default` is the default theme.
-2. `nocolor` uses no color, only attributes.
-3. `plain` uses only the default style - no colors or attributes.
-
-The configuration file allows for both modifying built-in themes and creating
-custom ones.
-
-See [wiremix.toml](./wiremix.toml) for more details.
-
-### Filters
-
-You can filter objects to exclude them from object lists based on their
-PipeWire properties.
-
-See [wiremix.toml](./wiremix.toml) for more details.
-
-#### Examples
-
-```toml
-[[filters]]
-# Hide virtual endpoints
-matches = [ { "node.virtual" = "true", "media.class" = "Audio/Sink" } ]
-```
+Character sets define the UI symbols; themes define colors and text attributes.
+Both have built-ins (`default`, `compat`, `extracompat` for character sets;
+`default`, `nocolor`, `plain` for themes) and can be customized or extended.
+Select them with `char_set`/`theme` (or `-s`/`-t`). See
+[macmix.toml](./macmix.toml) for details.
 
 ### Names
 
-You can customize how streams, endpoints, and devices are displayed in the user
-interface using a template system to generate names from PipeWire properties.
-
-It's likely that any particular naming scheme won't work well with 100% of your
-software and devices, so you can also specify alternate name templates to use
-for PipeWire nodes matching configurable criteria.
-
-See [wiremix.toml](./wiremix.toml) for more details.
-
-#### Examples
-
-The default naming scheme is:
+You can customize how devices and applications are labeled with a small template
+system. The defaults are:
 
 ```toml
 [names]
-stream = [ "{node:node.name}: {node:media.name}" ]
+# Per-application streams (Playback/Recording tabs) — the app's name
+stream = [ "{node:node.description}" ]
+# Devices (Output/Input tabs)
 endpoint = [ "{device:device.nick}", "{node:node.description}" ]
 device = [ "{device:device.nick}", "{device:device.description}" ]
 ```
 
-Not all nodes and devices have the same properties present, so if multiple
-naming templates are specified, wiremix will try to resolve them in order and
-use the first one that works.
+See [macmix.toml](./macmix.toml) for the full template syntax and per-object
+overrides.
 
-For ncpamixer-style names you can use:
+### Filters
 
-```toml
-[names]
-stream = [ "{node:node.name}: {node:media.name}" ]
-endpoint = [ "{node:node.description}" ]
-device = [ "{device:device.description}" ]
-```
+You can hide objects from the lists based on their properties. See
+[macmix.toml](./macmix.toml) for details.
 
-I use these overrides with the default names:
+## Credits & License
 
-```toml
-# This device's device.name is truncated to "USB-C to 3.5mm Headphone Jack
-# A". This override makes wiremix use device.description instead, which for
-# this device is "USB-C to 3.5mm Headphone Jack Adapter".
-[[names.overrides]]
-types = [ "endpoint", "device" ]
-matches = [ { "device:device.name" = "alsa_card.usb-Apple__Inc._USB-C_to_3.5mm_Headphone_Jack_Adapter_DWH841302FEJKLTA3-00" } ]
-templates = [ "{device:device.description}" ]
+macmix is a fork of [wiremix](https://github.com/tsowell/wiremix) by Thomas
+Sowell: it reuses wiremix's excellent terminal UI and replaces the Linux
+PipeWire backend with a native macOS CoreAudio one. wiremix's interface is in
+turn inspired by [ncpamixer](https://github.com/fulhax/ncpamixer) and
+pavucontrol.
 
-# The Spotify client's node.name is "spotify", and it also uses "Spotify" for
-# media.name. This override makes wiremix use just the node.name, so it shows
-# as "spotify" instead of "spotify: Spotify".
-[[names.overrides]]
-types = [ "stream" ]
-matches = [ { "node.name" = "spotify" } ]
-templates = [ "{node:node.name}" ]
+Licensed under MIT OR Apache-2.0, the same as the original wiremix.
 
-# mpv is also a bit redundant with the default naming scheme - it suffixes
-# media.name with "- mpv". This override makes it show as "foo - mpv" instead
-# of "mpv: foo - mpv".
-[[names.overrides]]
-types = [ "stream" ]
-matches = [ { "node.name" = "mpv" } ]
-templates = [ "{node:media.name}" ]
-```
+Issues and pull requests are welcome!

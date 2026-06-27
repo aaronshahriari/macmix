@@ -30,7 +30,6 @@ use crate::opt::Opt;
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct Config {
-    pub remote: Option<String>,
     pub fps: Option<f32>,
     pub mouse: bool,
     pub peaks: Peaks,
@@ -54,7 +53,6 @@ pub struct Config {
 #[cfg_attr(test, derive(PartialEq))]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
-    remote: Option<String>,
     #[serde(default = "default_fps")]
     fps: Option<f32>,
     #[serde(default = "default_mouse")]
@@ -279,10 +277,6 @@ fn default_lazy_capture() -> bool {
 impl ConfigFile {
     /// Override configuration with command-line arguments.
     pub fn apply_opt(&mut self, opt: &Opt) {
-        if let Some(remote) = &opt.remote {
-            self.remote = Some(remote.clone());
-        }
-
         if let Some(fps) = opt.fps {
             self.fps = (fps != 0.0).then_some(fps);
         }
@@ -390,7 +384,6 @@ impl TryFrom<ConfigFile> for Config {
             .extend(Keybinding::control_char_keybindings());
 
         Ok(Self {
-            remote: config_file.remote,
             fps: config_file.fps.filter(|&fps| fps != 0.0),
             mouse: config_file.mouse,
             peaks: config_file.peaks.unwrap_or_default(),
@@ -416,11 +409,11 @@ impl Config {
     /// Returns the configuration file path.
     pub fn default_path() -> Option<PathBuf> {
         if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
-            return Some(Path::new(&xdg_config).join("wiremix/wiremix.toml"));
+            return Some(Path::new(&xdg_config).join("macmix/macmix.toml"));
         }
 
         if let Ok(home) = env::var("HOME") {
-            return Some(Path::new(&home).join(".config/wiremix/wiremix.toml"));
+            return Some(Path::new(&home).join(".config/macmix/macmix.toml"));
         }
 
         None
@@ -474,8 +467,7 @@ pub mod strict {
     #[derive(Deserialize, Debug, PartialEq)]
     #[serde(deny_unknown_fields)]
     pub struct ConfigFile {
-        remote: Option<String>,
-        fps: Option<f32>,
+            fps: Option<f32>,
         mouse: bool,
         peaks: Option<Peaks>,
         char_set: String,
@@ -500,7 +492,6 @@ pub mod strict {
     impl From<ConfigFile> for super::ConfigFile {
         fn from(strict: ConfigFile) -> Self {
             super::ConfigFile {
-                remote: strict.remote,
                 fps: strict.fps,
                 mouse: strict.mouse,
                 peaks: strict.peaks,
@@ -615,7 +606,7 @@ mod tests {
 
     #[test]
     fn example_config_file_matches_default_config_file() {
-        let toml_str = include_str!("../wiremix.toml");
+        let toml_str = include_str!("../macmix.toml");
         let example: strict::ConfigFile = toml::from_str(toml_str).unwrap();
         let default: ConfigFile = toml::from_str("").unwrap();
 

@@ -16,9 +16,6 @@ pub struct Opt {
     #[clap(short = 'c', long, value_name = "FILE")]
     pub config: Option<PathBuf>,
 
-    /// The name of the remote to connect to
-    #[clap(short, long, value_name = "NAME")]
-    pub remote: Option<String>,
 
     /// Target frames per second (or 0 for unlimited)
     #[clap(short, long)]

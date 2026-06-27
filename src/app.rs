@@ -869,7 +869,6 @@ mod tests {
 
     fn output_config() -> Config {
         Config {
-            remote: None,
             fps: None,
             mouse: false,
             peaks: Peaks::Off,
@@ -953,7 +952,6 @@ mod tests {
         let (_, event_rx) = mpsc::channel();
 
         let config = Config {
-            remote: None,
             fps: None,
             mouse: false,
             peaks: Default::default(),
@@ -1049,7 +1047,6 @@ mod tests {
             (ctrl_x, Action::SelectTab(4)),
         ]);
         let config = Config {
-            remote: None,
             fps: None,
             mouse: false,
             peaks: Default::default(),

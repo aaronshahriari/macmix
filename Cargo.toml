@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "multimedia::audio"]
 keywords = ["mixer", "coreaudio", "macos", "volume", "audio", "tui"]
 edition = "2021"
 rust-version = "1.74.0"
-include = ["src/**/*", "Cargo.toml", "LICENSE*", "README.md", "wiremix.toml"]
+include = ["src/**/*", "Cargo.toml", "LICENSE*", "README.md", "macmix.toml"]
 
 [dependencies]
 anyhow = "1.0.95"
